@@ -14,6 +14,7 @@ use JSON; # deb: libjson-perl
 use DateTime; # deb: libdatetime-perl
 use URI::Escape;
 use Getopt::Std;
+use Data::Dump qw(dump);
 
 my $rcode = "UNKNOWN";
 my $response = "Couldn't determine state of job";
@@ -26,6 +27,7 @@ my $password;
 my $thresh_warn;
 my $thresh_crit;
 my $alert_on_fail;
+my $list_all_and_die;
 my $alert_on_lastx_fail;
 my $alert_on_nostart;
 my $debug = 0;
@@ -45,12 +47,18 @@ sub main {
     # s: Alert on situation when was never started
     # v: verbosity / debug (optional)
     my %opts;
-    getopts('j:l:u:p:w:c:a:t:s:fv', \%opts);
-
-    if (!$opts{j} || !$opts{l}) {
-        print STDERR "Missing option(s)\n\n";
+    getopts('j:l:u:p:w:c:a:t:s:fvL', \%opts);
+    print $opts{L};
+    if (!$opts{j} && $opts{L} == 0) {
+        print STDERR "Missing option(s) ; jobs or all jobs\n\n";
         &usage;
     }
+    if (!$opts{l}) {
+        print STDERR "Missing option(s) ; jenkins url\n\n";
+        &usage;
+    }
+ 
+    
     $debug = $opts{v};    
     if ($opts{'t'}) {
         $timeout = $opts{t};
@@ -65,6 +73,7 @@ sub main {
     print STDERR "Using Jenkins base URL: $jenkins_ubase\n" if $debug;
     $username = $opts{u};
     $password = $opts{p};
+    $list_all_and_die = $opts{L};
     $thresh_warn = int($opts{w});
     $thresh_crit = int($opts{c});
     $alert_on_nostart = $opts{s};
@@ -75,7 +84,21 @@ sub main {
             $alert_on_fail = 1;
         }
     }
-    
+    if ($list_all_and_die) {
+      my @asdf = apireqgetall(20); 
+      my @jobs = $asdf[2]{jobs};
+      my $size = $#{@jobs[0]};
+      print "size est egal a '$size'\n";
+      for my $i (0 .. $size) {
+        my $key;
+        print "i est egal a '$i'\n";
+        foreach $key (keys %{@{$jobs[0]}[$i]}) {
+          print "$key" . ${@{$jobs[0]}[$i]}{$key} . "\n";
+        }
+        print "one done... $i is ... ";
+      }   
+      die(0);
+    } 
     if ($thresh_warn == 0 && $thresh_crit == 0) {
         print STDERR "Must set either warning or critical threshold to a sensible value\n\n";
         &usage;
@@ -174,6 +197,36 @@ sub calcdur($) {
     my $dur = $timenow - $timethen;
     my $humandur = humanduration($dur);
     return ($absdur->seconds, $humandur);
+}
+
+sub apireqgetall($) {
+    my $timeout = shift;
+    my $url = "$jenkins_ubase/api/json";
+    print STDERR "Preparing API URL for query: $url\n" if $debug;
+    
+    my $ua = LWP::UserAgent->new;
+    if ($timeout) {
+        $ua->timeout($timeout);
+    }
+    my $req = HTTP::Request->new( GET => $url );
+    
+    if ( $username && $password ) {
+        print STDERR "Attempting HTTP basic auth as user: $username\n" if $debug;
+        $req->authorization_basic($username,$password);
+    } else {
+        print STDERR "Skipping authentication, username and password not specified\n" if $debug;
+    }
+    
+    my $res = $ua->request($req);
+    
+    if (!$res->is_success) {
+        print STDERR "Request successful. Body:\n\n" . $res->content . "\n\n" if $debug;
+        return ($res->is_success, $res->status_line, undef);
+     } else {
+        my $json = new JSON;
+        my $jobj = $json->decode( $res->content );
+        return ($res->is_success, $res->status_line, $jobj);
+    }
 }
 
 # Perform Jenkins JSON API request for $_ API call (lastBuild/lastStableBuild/lastSuccessfulBuild/lastFailedBuild etc)
